@@ -241,6 +241,506 @@
 - Ядро (`src/`) не импортирует `cli.py`, `bot.py`, `dashboard.py`.
 - `main.py` остаётся точкой входа для ручных прогонов, новые интерфейсы — отдельные файлы.
 
+### 5.5. MVP: базовые компоненты
+
+Первый этап — это 2.1 MVP («пульт портфеля») за вычетом того, что вынесено за скобки. Каждая диаграмма ниже показывает один срез и читается независимо от остальных.
+
+**Исключено из рассмотрения:**
+
+| Что | Компоненты | Причина |
+|---|---|---|
+| Стратегии и сделки | Strategy Engine, Risk Manager, Trade Executor, Trade Journal, Confirm Handler | Этап 2.3 |
+| Уведомления в чат | Notification Service, Confirm Handler | Вне первого контура |
+| Веб-интерфейс | Web | 2.5: сложный веб не делаем |
+| Расписание | Scheduler | Ручной запуск из CLI |
+
+В интерфейсе первого этапа остаётся только CLI: бот существует ради уведомлений и подтверждений, оба вне контура.
+
+**Контур данных.** Один проход слева направо, от брокера до экрана.
+
+```mermaid
+flowchart LR
+    API["T-Bank Invest API<br/>read-only токен"]
+    MDA["Market Data Adapter<br/>src/t_api"]
+    QC["Quote Cache<br/>src/db/quote_cache.py"]
+    PS[("Portfolio Store<br/>src/db")]
+    PM["Portfolio Model<br/>reconstruct дата"]
+    AN["Analytics<br/>доли, прибыль, доходность"]
+    PR["Presenter"]
+    CLI["CLI"]
+
+    API --> MDA
+    MDA --> QC --> PS
+    MDA --> PS
+    PS --> PM --> AN --> PR --> CLI
+
+    classDef have fill:#d9ead3,stroke:#38761d,color:#000
+    classDef build fill:#fff2cc,stroke:#bf9000,color:#000
+    classDef ext fill:#f4f4f4,stroke:#999,color:#000,stroke-dasharray:4 3
+
+    class API ext
+    class MDA have
+    class QC,PS,PM,AN,PR,CLI build
+```
+
+Зелёное — уже есть в репозитории, жёлтое — создавать. Adapter пишет в Store и котировки, и операции; Quote Cache стоит на пути котировок, чтобы не перекачивать их на каждый запрос.
+
+**Слои и зависимости.** Тот же контур, но сгруппирован по слоям 5.2. Стрелка направлена от того, от кого зависят.
+
+```mermaid
+flowchart BT
+    subgraph SRC["Внешний источник"]
+        API["T-Bank Invest API"]
+    end
+
+    subgraph GR["Граница"]
+        MDA["Market Data Adapter"]
+    end
+
+    subgraph INF["Инфраструктура данных"]
+        QC["Quote Cache"]
+        PS[("Portfolio Store")]
+    end
+
+    subgraph DOM["Доменный слой"]
+        PM["Portfolio Model"]
+        TE["Tax Engine"]
+        AN["Analytics"]
+    end
+
+    subgraph INT["Интерфейс"]
+        PR["Presenter"]
+        CLI["CLI"]
+    end
+
+    API -.->|только чтение| MDA
+    MDA --> QC
+    MDA --> PS
+    QC --> PS
+    PS --> PM
+    PM --> TE
+    PM --> AN
+    TE --> AN
+    AN --> PR
+    PR --> CLI
+
+    classDef dashed stroke-dasharray:5 5
+    class TE dashed
+```
+
+- Зависимости только снизу вверх: домен не знает про Presenter и CLI.
+- **Portfolio Store — базовый компонент** (4.3): читают все, от домена не зависит ни от кого.
+- **Tax Engine показан пунктирной границей этапа** — FIFO относится к 2.4, а не к 2.1. В контуре он держится на Model и нужен, только если на первом этапе считать налоговые лоты. Решение за тобой.
+- Analytics в таблице 5.1 отсутствует как строка, но метрики 2.1 (доли, прибыль, доходность) — это он и есть, и в 8.5 он присутствует как узел. Расхождение 5.1 и 8.5 стоит закрыть: либо добавить Analytics в 5.1, либо убрать из 8.5.
+
+**Порядок сборки.** Что за чем, по зависимостям, а не по важности фич.
+
+```mermaid
+flowchart LR
+    E0["0. Есть<br/>config, models, t_api"]
+    E1["1. Portfolio Store<br/>схема, сессии, миграции"]
+    E2["2. Backfill<br/>операции и цены закрытия"]
+    E3["3. Portfolio Model<br/>позиции на дату"]
+    E4["4. Analytics<br/>доли, прибыль, доходность"]
+    E5["5. Presenter и CLI<br/>таблица и график"]
+    E6["6. Снимки<br/>состояние на сегодня"]
+
+    E0 --> E1 --> E2 --> E3 --> E4 --> E5 --> E6
+```
+
+Пункт 6 после вывода: без истории на экране приложение уже полезно, а снимки копят историю только вперёд — задним числом вчерашний день не восстановить. Поэтому начинать их надо как можно раньше: разрыв между 5 и 6 это потерянные дни графика.
+
+**Границы модулей в коде.** Как контур раскладывается по `src/` и кто кого импортирует.
+
+```mermaid
+flowchart TD
+    CLI["cli.py"]
+    MAIN["main.py"]
+
+    subgraph SRCDIR["src/"]
+        CFG["config.py"]
+        MODELS["models/"]
+        TAPI["t_api/"]
+        DB["db/"]
+        SVC["services/<br/>portfolio_service.py<br/>analytics_service.py<br/>tax_service.py"]
+    end
+
+    CLI --> SVC
+    MAIN --> SVC
+    SVC --> DB
+    SVC --> TAPI
+    SVC --> CFG
+    SVC --> MODELS
+    DB --> MODELS
+    TAPI --> MODELS
+    TAPI --> CFG
+
+    classDef have fill:#d9ead3,stroke:#38761d,color:#000
+    classDef build fill:#fff2cc,stroke:#bf9000,color:#000
+
+    class CFG,MODELS,TAPI have
+    class DB,SVC build
+```
+
+Три правила из 5.4 на этом срезе: `models/` не импортирует ни `db/`, ни `t_api/`; `src/` не импортирует `cli.py`; `db/` и `t_api/` не знают друг про друга — встречаются только внутри `services/`.
+
+**Рантайм: два сценария.** Разовый backfill и обычный запрос пользователя.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Пользователь
+    participant C as CLI
+    participant A as Analytics
+    participant M as Portfolio Model
+    participant S as Portfolio Store
+    participant D as Market Data Adapter
+    participant T as T-Bank API
+
+    Note over U,T: Разовый backfill (этап 2)
+    U->>C: backfill
+    C->>D: выгрузить операции
+    D->>T: getOperationsByCursor
+    T-->>D: страницы операций
+    D->>S: сохранить операции
+    C->>D: выгрузить цены закрытия
+    D->>T: GetCandles
+    T-->>D: свечи
+    D->>S: сохранить цены
+
+    Note over U,T: Запрос на дату (повторяется)
+    U->>C: portfolio на дату
+    C->>A: метрики
+    A->>M: reconstruct дата
+    M->>S: позиции и цены на дату
+    S-->>M: строки
+    M-->>A: состояние портфеля
+    A-->>C: доли, прибыль, доходность
+    C-->>U: таблица
+```
+
+Backfill обращается к API, запрос на дату — нет. Это и есть цель контура: после загрузки история строится из локальной БД и не упирается в rate limit.
+
+**Что меняется из-за исключений.** Не замечания по оформлению, а последствия для скоупа:
+
+- **Без Scheduler** ежедневный снимок и обновление котировок запускает человек из CLI или cron ОС. Пункт 2.1 «отчёт раз в день/неделю» и П3 из 6.3 без расписания не выполняются сами.
+- **Без Notification Service** в 2.1 нереализуемы три пункта уведомлений (цена выше/ниже, изменение за день, периодический отчёт). Это противоречие со списком MVP — если уведомления действительно сдвигаются, их надо убрать из `PROJECT_PLAN.md` 2.1.
+- **Без Web** «График стоимости портфеля» из 2.1 существует только как файл (PNG/HTML) или ASCII в терминале — Presenter отдаёт данные, рисует не браузер.
+
+### 5.6. Корзины компонентов MVP
+
+Одна корзина = один компонент. Внутри корзины два отсека: **обязанности** (что компонент делает) и **истории** (какие user stories он закрывает). Ребро читается как «обязанность нужна, чтобы закрыть историю».
+
+Два правила чтения:
+
+- **Обязанность без ребра** — в скоупе есть работа без пользовательской ценности. Либо это техническая необходимость, либо лишнее.
+- **История без ребра** — корзину строить не из чего, контракт не определён.
+
+#### Корзина 1. Portfolio Store — базовый
+
+```mermaid
+flowchart LR
+    subgraph B1["Корзина: Portfolio Store · src/db"]
+        direction LR
+        subgraph B1R["Обязанности"]
+            R11["Схема БД и миграции"]
+            R12["Запись операций без дублей"]
+            R13["Хранение цен закрытия"]
+            R14["Хранение снимков"]
+            R15["Счета и валюты"]
+            R16["Бэкап и восстановление"]
+        end
+        subgraph B1U["Истории"]
+            U1["US-1 Динамика портфеля"]
+            U2["US-2 Структура активов"]
+            U9["US-9 Backfill"]
+            U11["US-11 Миграция схемы"]
+            U13["US-13 Восстановление из бэкапа"]
+            U16["US-16 Снимок портфеля"]
+        end
+    end
+
+    R11 --> U11
+    R12 --> U9
+    R12 --> U1
+    R13 --> U1
+    R13 --> U9
+    R14 --> U16
+    R15 --> U2
+    R16 --> U13
+
+    classDef story fill:#deeaf6,stroke:#3d85c6,color:#000
+    class U1,U2,U9,U11,U13,U16 story
+```
+
+Контракт 5.3: `save_operations`, `get_positions(date)`, `save_snapshot`. Обязанность R12 берёт на себя AC «повторный запуск не создаёт дублей» из US-9 — по 4.1 `operation_id` неустойчив, поэтому перезапись идемпотентная, а не вставка.
+
+#### Корзина 2. Portfolio Model
+
+```mermaid
+flowchart LR
+    subgraph B2["Корзина: Portfolio Model · src/services/portfolio_service.py"]
+        direction LR
+        subgraph B2R["Обязанности"]
+            R21["Позиции на дату из операций"]
+            R22["Лоты в штуки через размер лота"]
+            R23["Мультивалюта: курс на дату"]
+            R24["Облигации: НКД и амортизация"]
+            R25["Сплиты и корпоративные действия"]
+        end
+        subgraph B2U["Истории"]
+            V1["US-1 Динамика портфеля"]
+            V2["US-2 Структура активов"]
+            V16["US-16 Снимок портфеля"]
+        end
+    end
+
+    R21 --> V1
+    R21 --> V2
+    R21 --> V16
+    R22 --> V2
+    R23 --> V1
+    R24 --> V1
+    R25 --> V1
+
+    classDef story fill:#deeaf6,stroke:#3d85c6,color:#000
+    class V1,V2,V16 story
+```
+
+R24 и R25 — это «подводные камни» из `PROJECT_PLAN.md` 3.5. Если в MVP портфель только из акций, обе обязанности выносятся за скобки, и корзина сжимается до трёх.
+
+#### Корзина 3. Market Data Adapter — граница
+
+```mermaid
+flowchart LR
+    subgraph B3["Корзина: Market Data Adapter · src/t_api"]
+        direction LR
+        subgraph B3R["Обязанности"]
+            R31["Только чтение, read-only токен"]
+            R32["Пагинация getOperationsByCursor"]
+            R33["Свечи через GetCandles"]
+            R34["Rate limit и ретраи"]
+            R35["Ответ API в DTO"]
+            R36["Ротация токена без простоя"]
+        end
+        subgraph B3U["Истории"]
+            W9["US-9 Backfill"]
+            W12["US-12 Ротация токена"]
+            W17["US-17 Обновление котировок"]
+        end
+    end
+
+    R31 --> W12
+    R32 --> W9
+    R33 --> W9
+    R33 --> W17
+    R34 --> W17
+    R35 --> W9
+    R36 --> W12
+
+    classDef story fill:#deeaf6,stroke:#3d85c6,color:#000
+    class W9,W12,W17 story
+```
+
+Правило 3 из 10: компонент только читает. Запись в API появится вместе с Trade Executor, то есть не в MVP. R35 существует, чтобы протокол не протекал в домен: `models/` не знает про protobuf.
+
+#### Корзина 4. Quote Cache
+
+```mermaid
+flowchart LR
+    subgraph B4["Корзина: Quote Cache · src/db/quote_cache.py"]
+        direction LR
+        subgraph B4R["Обязанности"]
+            R41["Повторный запрос не идёт в API"]
+            R42["Срок годности цены"]
+            R43["Отдача исторических цен закрытия"]
+            R44["Единая точка цен для Model и Analytics"]
+        end
+        subgraph B4U["Истории"]
+            X1["US-1 Динамика портфеля"]
+            X17["US-17 Обновление котировок"]
+        end
+    end
+
+    R41 --> X17
+    R42 --> X17
+    R43 --> X1
+    R44 --> X1
+
+    classDef story fill:#deeaf6,stroke:#3d85c6,color:#000
+    class X1,X17 story
+```
+
+Самая маленькая корзина. Если её убрать, R41 и R42 переедут в Adapter, и граница «адаптер = протокол» размоется.
+
+#### Корзина 5. Analytics
+
+```mermaid
+flowchart LR
+    subgraph B5["Корзина: Analytics · src/services/analytics_service.py"]
+        direction LR
+        subgraph B5R["Обязанности"]
+            R51["Стоимость портфеля на дату"]
+            R52["Доли бумаг, сумма 100% с кэшем"]
+            R53["P&L позиции"]
+            R54["Доходность за день/неделю/месяц/всё"]
+            R55["Вложено денег, net cash flow"]
+            R56["Структура по типам/секторам/валютам"]
+            R57["Изменение долей между датами"]
+        end
+        subgraph B5U["Истории"]
+            Y1["US-1 Динамика портфеля"]
+            Y2["US-2 Структура активов"]
+            Y18["US-18 Пересчёт метрик"]
+        end
+    end
+
+    R51 --> Y1
+    R54 --> Y1
+    R55 --> Y1
+    R52 --> Y2
+    R56 --> Y2
+    R57 --> Y2
+    R51 --> Y18
+    R53 --> Y18
+
+    classDef story fill:#deeaf6,stroke:#3d85c6,color:#000
+    class Y1,Y2,Y18 story
+```
+
+R55 закрывает AC «две линии: стоимость и вложенные средства» из US-1. XIRR, TWR, Sharpe и просадка в корзину не входят — это 2.2.
+
+Компонента нет в таблице 5.1, но без него не закрывается ни одна история Пользователя. См. замечание в 5.5.
+
+#### Корзина 6. CLI и Presenter — интерфейс
+
+```mermaid
+flowchart LR
+    subgraph B6["Корзина: CLI и Presenter · cli.py"]
+        direction LR
+        subgraph B6R["Обязанности"]
+            R61["Команды backfill, value, structure, export"]
+            R62["Форматирование таблицы"]
+            R63["График как файл или ASCII"]
+            R64["Экспорт CSV"]
+            R65["Код возврата и логи для cron"]
+        end
+        subgraph B6U["Истории"]
+            Z1["US-1 Динамика портфеля"]
+            Z2["US-2 Структура активов"]
+            Z9["US-9 Backfill"]
+            Z11["US-11 Миграция схемы"]
+            Z12["US-12 Ротация токена"]
+            Z13["US-13 Восстановление из бэкапа"]
+        end
+    end
+
+    R61 --> Z9
+    R61 --> Z11
+    R61 --> Z12
+    R61 --> Z13
+    R62 --> Z1
+    R62 --> Z2
+    R63 --> Z1
+    R64 --> Z2
+
+    classDef story fill:#deeaf6,stroke:#3d85c6,color:#000
+    class Z1,Z2,Z9,Z11,Z12,Z13 story
+```
+
+R65 — единственная обязанность без ребра: она нужна оператору, который запускает задачи из cron ОС вместо Scheduler, но отдельной истории под неё нет.
+
+#### Корзина 7. Config — сквозной
+
+```mermaid
+flowchart LR
+    subgraph B7["Корзина: Config · src/config.py"]
+        direction LR
+        subgraph B7R["Обязанности"]
+            R71["Токен из env или keyring"]
+            R72["Счета в фокусе"]
+            R73["Путь к файлу БД"]
+            R74["Валюта отчёта"]
+        end
+        subgraph B7U["Истории"]
+            A12["US-12 Ротация токена"]
+            A13["US-13 Восстановление из бэкапа"]
+            A9["US-9 Backfill"]
+            A1["US-1 Динамика портфеля"]
+        end
+    end
+
+    R71 --> A12
+    R73 --> A13
+    R72 --> A9
+    R74 --> A1
+
+    classDef story fill:#deeaf6,stroke:#3d85c6,color:#000
+    class A12,A13,A9,A1 story
+```
+
+Расписание и выбор мессенджера в конфиге остаются, но в MVP не читаются: Scheduler и Notification Service вне контура.
+
+#### Корзина 8. Tax Engine — вне MVP
+
+```mermaid
+flowchart LR
+    subgraph B8["Корзина: Tax Engine · src/services/tax_service.py"]
+        direction LR
+        subgraph B8R["Обязанности"]
+            R81["FIFO-очередь по тикеру"]
+            R82["Лоты и даты покупки"]
+            R83["ЛДВ: правила после 2025"]
+            R84["P&L для сверки с брокером"]
+        end
+        subgraph B8U["Истории"]
+            C3["US-3 Налоговое планирование ЛДВ"]
+        end
+    end
+
+    R81 --> C3
+    R82 --> C3
+    R83 --> C3
+    R84 -.->|вне MVP| C3
+
+    classDef story fill:#deeaf6,stroke:#3d85c6,color:#000
+    classDef out fill:#ffffff,stroke:#999,color:#555,stroke-dasharray:5 5
+    class C3 story
+    class R81,R82,R83,R84 out
+```
+
+US-3 — единственная история Пользователя, которая не нужна для «пульта портфеля». Пока корзина вне MVP, US-3 выпадает из первого этапа: это надо зафиксировать в бэклоге, иначе история повисит в плане как обещание.
+
+#### Сводка корзин
+
+| Корзина | Обязанностей | Истории | Код | Статус |
+|---|---|---|---|---|
+| Portfolio Store | 6 | US-1, 2, 9, 11, 13, 16 | `src/db/` | создать |
+| Portfolio Model | 5 | US-1, 2, 16 | `src/services/portfolio_service.py` | создать |
+| Market Data Adapter | 6 | US-9, 12, 17 | `src/t_api/` | есть частично |
+| Quote Cache | 4 | US-1, 17 | `src/db/quote_cache.py` | создать |
+| Analytics | 7 | US-1, 2, 18 | `src/services/analytics_service.py` | создать |
+| CLI и Presenter | 5 | US-1, 2, 9, 11, 12, 13 | `cli.py` | создать |
+| Config | 4 | US-1, 9, 12, 13 | `src/config.py` | есть |
+| Tax Engine | 4 | US-3 | `src/services/tax_service.py` | вне MVP |
+
+Покрытие: из 18 историй в MVP-корзины попадают **9** — US-1, 2, 9, 11, 12, 13, 16, 17, 18. Ещё одна (US-3) ждёт Tax Engine.
+
+**Вне корзин — 8 историй**, все по твоим исключениям:
+
+| История | Почему вне |
+|---|---|
+| US-4 Сигнал о ребалансировке | Notification Service |
+| US-5 Стратегия в песочнице | Strategy Engine, Risk Manager, Trade Executor |
+| US-6 Подтверждение сделки | Confirm Handler, Notification Service |
+| US-7 Kill switch | Trade Executor, Scheduler |
+| US-8 Целевые доли | потребитель — Strategy Engine |
+| US-10 Настройка расписания | Scheduler |
+| US-14 Проверка лимитов | Risk Manager |
+| US-15 Журналирование заявок | Trade Journal |
+
+Ни одна из них не теряет смысла — они просто относятся к этапам 2.3 и 2.4. Диаграмма 8.5 по-прежнему описывает полную систему, эти корзины — первый этап.
+
 ---
 
 ## 6. Сценарии по акторам
@@ -481,6 +981,161 @@ AC:
 AC:
 - метрики пересчитываются после снимка;
 - тяжёлые расчёты не блокируют интерфейс.
+
+### 8.5. Покрытие user stories компонентами
+
+Какая история какими компонентами реализуется. Ребро читается как «компонент участвует в реализации истории». Источник соответствия — матрица 7, дополненная AC историй.
+
+```mermaid
+flowchart LR
+    subgraph L1["Слой данных"]
+        MDA["Market Data Adapter"]
+        QC["Quote Cache"]
+        PS[("Portfolio Store")]
+    end
+
+    subgraph L2["Доменный слой"]
+        PM["Portfolio Model"]
+        AN["Analytics"]
+        TE["Tax Engine"]
+        SE["Strategy Engine"]
+        RM["Risk Manager"]
+        TX["Trade Executor"]
+    end
+
+    subgraph L3["Сервисы"]
+        NS["Notification Service"]
+        CH["Confirm Handler"]
+        TJ["Trade Journal"]
+    end
+
+    subgraph L4["Инфраструктура и конфигурация"]
+        SCH["Scheduler"]
+        CFG["Config"]
+    end
+
+    subgraph L5["Интерфейсы"]
+        UI["CLI / Бот / Web"]
+        PR["Presenter"]
+    end
+
+    subgraph A1["Пользователь"]
+        US1["US-1 Динамика портфеля"]
+        US2["US-2 Структура активов"]
+        US3["US-3 Налоговое планирование ЛДВ"]
+        US4["US-4 Сигнал о ребалансировке"]
+        US5["US-5 Стратегия в песочнице"]
+        US6["US-6 Подтверждение сделки"]
+        US7["US-7 Kill switch"]
+        US8["US-8 Целевые доли"]
+    end
+
+    subgraph A2["Оператор"]
+        US9["US-9 Backfill"]
+        US10["US-10 Настройка расписания"]
+        US11["US-11 Миграция схемы БД"]
+        US12["US-12 Ротация токена"]
+        US13["US-13 Восстановление из бэкапа"]
+    end
+
+    subgraph A3["Робот-исполнитель"]
+        US14["US-14 Проверка лимитов"]
+        US15["US-15 Журналирование заявок"]
+    end
+
+    subgraph A4["Планировщик"]
+        US16["US-16 Ежедневный снимок"]
+        US17["US-17 Обновление котировок"]
+        US18["US-18 Пересчёт метрик"]
+    end
+
+    %% Пользователь
+    PM --> US1
+    AN --> US1
+    PR --> US1
+    UI --> US1
+
+    PM --> US2
+    AN --> US2
+    PR --> US2
+    UI --> US2
+
+    PS --> US3
+    TE --> US3
+    PR --> US3
+    UI --> US3
+
+    SE --> US4
+    CFG --> US4
+    NS --> US4
+
+    SE --> US5
+    RM --> US5
+    TX --> US5
+    TJ --> US5
+    CFG --> US5
+    UI --> US5
+
+    CH --> US6
+    NS --> US6
+    RM --> US6
+    TX --> US6
+    UI --> US6
+
+    TX --> US7
+    SCH --> US7
+    TJ --> US7
+    UI --> US7
+
+    SE --> US8
+    CFG --> US8
+    UI --> US8
+
+    %% Оператор
+    MDA --> US9
+    PS --> US9
+    UI --> US9
+
+    SCH --> US10
+    CFG --> US10
+    NS --> US10
+    UI --> US10
+
+    PS --> US11
+    UI --> US11
+
+    MDA --> US12
+    CFG --> US12
+    UI --> US12
+
+    PS --> US13
+    UI --> US13
+
+    %% Робот-исполнитель
+    RM --> US14
+    CFG --> US14
+
+    TJ --> US15
+
+    %% Планировщик
+    PM --> US16
+    PS --> US16
+    SCH --> US16
+
+    MDA --> US17
+    QC --> US17
+    SCH --> US17
+
+    AN --> US18
+    SCH --> US18
+```
+
+Замечания по диаграмме:
+
+- **Analytics и Trade Journal отсутствуют в таблице 5.1**, но участвуют в матрице 7 (Ю1, Ю2, П4, Р6) и в этой диаграмме. Нужно решить: добавить их в реестр компонентов или отнести к существующим.
+- **Config** — узел-заглушка: токены, расписание, целевые доли, мессенджер. В 5.4 это `src/config.py`, отдельным логическим компонентом не объявлен.
+- Слой данных не связан с историями напрямую, кроме `Portfolio Store`: истории работают с реконструированным состоянием, а не с сырыми ответами API. Исключение — О1, О4, П1, где история про сам Adapter.
+- Рёбра `UI` показывают точку входа, а не логику: интерфейс не должен содержать расчётов.
 
 ---
 
