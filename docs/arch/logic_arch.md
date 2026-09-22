@@ -261,33 +261,96 @@
 
 ### 5.4. Соответствие компонентов структуре кода
 
-Компоненты логические, а не файловые. Имена модулей подчиняются фактической структуре `src/`, а не схеме `core/` из `PROJECT_PLAN.md` 7.3.
+Компоненты логические, а не файловые: один компонент — один модуль, одна папка — один слой графа 5.2. Пути ниже целевые; фактический код лежит плоско в `src/` и переезжает по шагам в конце раздела.
+
+**Целевая структура пакета.**
+
+```
+src/invest_app/
+├── config.py                # настройки, чтение .env
+├── logging_setup.py         # логи в файл
+├── facade.py                # InvestApp — единая точка входа интерфейсов
+├── backfill.py              # разовая выгрузка истории (О1)
+│
+├── domain/                  # значения и события, I = 0
+│   ├── operation.py  position.py  portfolio.py  snapshot.py
+│   ├── account.py    lot.py       order.py
+│   └── events.py            # контракт события объявляет домен
+│
+├── repositories/            # доступ к данным, репозиторий на тип
+│   ├── operation_repo.py    snapshot_repo.py
+│   └── price_repo.py        account_repo.py
+│
+├── services/                # доменные расчёты
+│   ├── portfolio_model.py   analytics.py
+│   ├── tax_engine.py        strategy_engine.py
+│   ├── risk_manager.py      rules/
+│   ├── trade_executor.py    trade_journal.py
+│   ├── notification.py      confirm_handler.py
+│   └── scheduler.py
+│
+├── infrastructure/          # внешний мир
+│   ├── database.py          # абстракция Database + SQLiteDatabase
+│   ├── tbank_client.py      # Market Data Adapter
+│   ├── quote_cache.py       # Quote Cache
+│   └── event_bus.py         # реализация шины из domain/events.py
+│
+└── interfaces/              # «морды» над ядром
+    ├── cli/                 # main.py, commands.py; Presenter здесь же
+    ├── web/                 # Streamlit
+    └── bot/                 # Telegram/VK
+```
+
+Слои здесь — это слои 5.2, а не новые сущности: `domain` ← `repositories` ← `services` ← `facade` ← `interfaces`, `infrastructure` подводится к ним снаружи. Обёртки `core/` нет: она называла «всё остальное» и ничего не запрещала, а разделение ядра и интерфейсов уже делает `interfaces/` (правило 2 из 10).
+
+В диаграммах 5.5 и заголовках корзин 5.6 пути указаны относительно `src/invest_app/`.
+
+**Маппинг компонентов на пути.**
 
 | Компонент | Где в коде | Статус |
 |---|---|---|
-| Market Data Adapter | `src/t_api/` | есть |
-| Portfolio Store | `src/db/` | создать |
-| Quote Cache | `src/db/quote_cache.py` | создать |
-| Portfolio Model | `src/services/portfolio_service.py` | создать |
-| Tax Engine | `src/services/tax_service.py` | создать |
-| Strategy Engine | `src/services/strategy_service.py` | создать |
-| Risk Manager | `src/services/risk_service.py` | создать |
-| Trade Executor | `src/services/executor_service.py` | создать |
-| Trade Journal | `src/services/journal_service.py` | создать |
-| Notification Service | `src/services/notification_service.py` | создать |
-| Confirm Handler | `src/services/confirm_service.py` | создать |
-| Scheduler | `src/services/scheduler_service.py` | создать |
-| Presenter | внутри интерфейса, в ядро не импортируется | создать |
-| CLI / Bot / Web | `cli.py`, `bot.py`, `dashboard.py` | создать |
-| DTO и значения | `src/models/` | есть |
-| Конфиг: токены, расписание, целевые доли, мессенджер | `src/config.py` | есть |
+| Market Data Adapter | `infrastructure/tbank_client.py` | есть в `src/t_api/`, перенести |
+| Portfolio Store | `repositories/` | создать, MVP |
+| Quote Cache | `infrastructure/quote_cache.py` | создать, MVP |
+| Portfolio Model | `services/portfolio_model.py` | создать, MVP |
+| Analytics | `services/analytics.py` | создать, MVP |
+| Presenter | `interfaces/cli/`, в фасад не импортируется | создать, MVP |
+| CLI | `interfaces/cli/` | создать, MVP |
+| Конфиг: токены, расписание, целевые доли, мессенджер | `config.py` | есть в `src/config.py`, перенести |
+| DTO и значения | `domain/` | есть в `src/models/`, перенести |
+| Scheduler | `services/scheduler.py`, `scripts/run_snapshot.py` | 2.3; снимок до него — cron + скрипт |
+| Tax Engine | `services/tax_engine.py`, `domain/lot.py` | 2.4 |
+| Strategy Engine | `services/strategy_engine.py`, `domain/order.py` | 2.3 |
+| Risk Manager | `services/risk_manager.py`, `services/rules/` | 2.3 |
+| Trade Executor | `services/trade_executor.py` | 2.3 |
+| Trade Journal | `services/trade_journal.py` | 2.3 |
+| Notification Service | `services/notification.py` | 2.3 |
+| Confirm Handler | `services/confirm_handler.py` | 2.3 |
+| События | `domain/events.py` + `infrastructure/event_bus.py` | 2.3 |
+| Web | `interfaces/web/` | 2.2 |
+| Bot | `interfaces/bot/` | 2.3 |
+| Фасад InvestApp | `facade.py` | 2.2, когда появится второй интерфейс |
 
-Правила:
+**Создаём сейчас, а не всё дерево.** В MVP заводим `domain/`, `repositories/`, `services/`, `infrastructure/`, `interfaces/cli/` и четыре файла уровня пакета — ровно компоненты из 5.5. Остальные модули из таблицы появляются по этапу, указанный в статусе. `services/rules/` и `domain/events.py` не создаём до этапа 2.3: пустая папка — это обещание, которое никто не выполнит, а 5.7.12 как раз предупреждает про раздувание структуры раньше времени.
 
-- Доменные компоненты — по одному модулю в `src/services/`, стиль имён как у существующего `account_service.py`.
-- `src/models/` — только DTO и значения, без обращений в API и в БД.
-- Ядро (`src/`) не импортирует `cli.py`, `bot.py`, `dashboard.py`.
-- `main.py` остаётся точкой входа для ручных прогонов, новые интерфейсы — отдельные файлы.
+**Переезд из плоского `src/`.** По шагам, каждый — рабочий коммит.
+
+| Шаг | Что | Зачем первым именно он |
+|---|---|---|
+| 1 | `[build-system]` в `pyproject.toml`, пакет `invest_app`, editable-установка | без него `import invest_app` не работает, а `tests/` не найдёт ядро |
+| 2 | `src/models/` → `domain/`, `AccountStorage` → `repositories/account_repo.py` | снимает нарушение правила про `domain/` ниже |
+| 3 | `src/t_api/client.py` → `infrastructure/tbank_client.py` | граница с внешним миром собирается в одной папке |
+| 4 | `src/services/account_service.py` → `repositories/account_repo.py` + `backfill.py` | в сервисе смешаны подключение, синхронизация и хранение |
+| 5 | `main.py` → `scripts/run_backfill.py` и `interfaces/cli/` | точка входа перестаёт быть частью ядра |
+
+**Правила:**
+
+- Доменные компоненты — по одному модулю в `services/`, стиль имён без суффикса `_service`: `portfolio_model.py`, `analytics.py`, `tax_engine.py`.
+- `domain/` — только значения и события. Без обращений в API и в БД, без импортов из соседних слоёв.
+- `interfaces/` импортирует `facade.py`, а до его появления — только модули `services/`, минуя `repositories/` и `infrastructure/`. Ядро не импортирует `interfaces/` (правило 1 из 10).
+- `infrastructure/` не импортирует `services/`: зависимость идёт от реализации к абстракции из `domain/`, а не наоборот (правило 5 из 10).
+- **Единственное нарушение сейчас** — `AccountStorage` в `src/services/account_service.py` читает `models/` как слой хранения. Это не стиль, а цикл по ответственности; снимается шагом 2 переезда.
+- Пути этого раздела — единственное место, где они зафиксированы. Диаграммы 5.5 и корзины 5.6 следуют за таблицей выше.
 
 ### 5.5. MVP: базовые компоненты
 
@@ -309,9 +372,9 @@
 ```mermaid
 flowchart LR
     API["T-Bank Invest API<br/>read-only токен"]
-    MDA["Market Data Adapter<br/>src/t_api"]
-    QC["Quote Cache<br/>src/db/quote_cache.py"]
-    PS[("Portfolio Store<br/>src/db")]
+    MDA["Market Data Adapter<br/>infrastructure/tbank_client.py"]
+    QC["Quote Cache<br/>infrastructure/quote_cache.py"]
+    PS[("Portfolio Store<br/>repositories/")]
     PM["Portfolio Model<br/>reconstruct дата"]
     AN["Analytics<br/>доли, прибыль, доходность"]
     PR["Presenter"]
@@ -377,6 +440,7 @@ flowchart BT
 ```
 
 - Зависимости только снизу вверх: домен не знает про Presenter и CLI.
+- **Слои здесь логические из 5.2, а не папки:** Portfolio Store живёт в `repositories/`, Quote Cache — в `infrastructure/`. Пути компонентов — в таблице 5.4.
 - **Portfolio Store — базовый компонент** (4.3): читают все, от домена не зависит ни от кого.
 - **Tax Engine показан пунктирной границей этапа** — FIFO относится к 2.4, а не к 2.1. В контуре он держится на Model и нужен, только если на первом этапе считать налоговые лоты. Решение за тобой.
 - Analytics в таблице 5.1 отсутствует как строка, но метрики 2.1 (доли, прибыль, доходность) — это он и есть, и в 8.5 он присутствует как узел. Расхождение 5.1 и 8.5 стоит закрыть: либо добавить Analytics в 5.1, либо убрать из 8.5.
@@ -385,8 +449,8 @@ flowchart BT
 
 ```mermaid
 flowchart LR
-    E0["0. Есть<br/>config, models, t_api"]
-    E1["1. Portfolio Store<br/>схема, сессии, миграции"]
+    E0["0. Есть<br/>config, domain, tbank_client"]
+    E1["1. Portfolio Store<br/>repositories, схема, миграции"]
     E2["2. Backfill<br/>операции и цены закрытия"]
     E3["3. Portfolio Model<br/>позиции на дату"]
     E4["4. Analytics<br/>доли, прибыль, доходность"]
@@ -398,39 +462,43 @@ flowchart LR
 
 Пункт 6 после вывода: без истории на экране приложение уже полезно, а снимки копят историю только вперёд — задним числом вчерашний день не восстановить. Поэтому начинать их надо как можно раньше: разрыв между 5 и 6 это потерянные дни графика.
 
-**Границы модулей в коде.** Как контур раскладывается по `src/` и кто кого импортирует.
+**Границы модулей в коде.** Как контур раскладывается по `src/invest_app/` и кто кого импортирует.
 
 ```mermaid
 flowchart TD
-    CLI["cli.py"]
-    MAIN["main.py"]
+    CLI["interfaces/cli/"]
+    MAIN["main.py<br/>до шага 5 переезда"]
 
-    subgraph SRCDIR["src/"]
+    subgraph PKG["src/invest_app/"]
         CFG["config.py"]
-        MODELS["models/"]
-        TAPI["t_api/"]
-        DB["db/"]
-        SVC["services/<br/>portfolio_service.py<br/>analytics_service.py<br/>tax_service.py"]
+        BF["backfill.py"]
+        DOM["domain/"]
+        REPO["repositories/"]
+        SVC["services/<br/>portfolio_model.py<br/>analytics.py"]
+        INF["infrastructure/<br/>tbank_client.py<br/>quote_cache.py"]
     end
 
     CLI --> SVC
-    MAIN --> SVC
-    SVC --> DB
-    SVC --> TAPI
-    SVC --> CFG
-    SVC --> MODELS
-    DB --> MODELS
-    TAPI --> MODELS
-    TAPI --> CFG
+    CLI --> BF
+    MAIN --> BF
+    BF --> INF
+    BF --> REPO
+    SVC --> REPO
+    SVC --> DOM
+    REPO --> DOM
+    INF --> DOM
+    INF --> CFG
 
     classDef have fill:#d9ead3,stroke:#38761d,color:#000
     classDef build fill:#fff2cc,stroke:#bf9000,color:#000
+    classDef gone fill:#f4f4f4,stroke:#999,color:#000,stroke-dasharray:4 3
 
-    class CFG,MODELS,TAPI have
-    class DB,SVC build
+    class CFG,DOM have
+    class BF,REPO,SVC,INF build
+    class MAIN gone
 ```
 
-Три правила из 5.4 на этом срезе: `models/` не импортирует ни `db/`, ни `t_api/`; `src/` не импортирует `cli.py`; `db/` и `t_api/` не знают друг про друга — встречаются только внутри `services/`.
+Три правила из 5.4 на этом срезе: `domain/` не импортирует ни `repositories/`, ни `infrastructure/`; ядро не импортирует `interfaces/`; `repositories/` и `infrastructure/` друг про друга не знают — они сходятся только в `backfill.py`.
 
 **Рантайм: два сценария.** Разовый backfill и обычный запрос пользователя.
 
@@ -488,7 +556,7 @@ Backfill обращается к API, запрос на дату — нет. Э�
 
 ```mermaid
 flowchart LR
-    subgraph B1["Корзина: Portfolio Store · src/db"]
+    subgraph B1["Корзина: Portfolio Store · src/invest_app/repositories/"]
         direction LR
         subgraph B1R["Обязанности"]
             R11["Схема БД и миграции"]
@@ -527,7 +595,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    subgraph B2["Корзина: Portfolio Model · src/services/portfolio_service.py"]
+    subgraph B2["Корзина: Portfolio Model · src/invest_app/services/portfolio_model.py"]
         direction LR
         subgraph B2R["Обязанности"]
             R21["Позиции на дату из операций"]
@@ -561,7 +629,7 @@ R24 и R25 — это «подводные камни» из `PROJECT_PLAN.md` 3
 
 ```mermaid
 flowchart LR
-    subgraph B3["Корзина: Market Data Adapter · src/t_api"]
+    subgraph B3["Корзина: Market Data Adapter · src/invest_app/infrastructure/tbank_client.py"]
         direction LR
         subgraph B3R["Обязанности"]
             R31["Только чтение, read-only токен"]
@@ -596,7 +664,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    subgraph B4["Корзина: Quote Cache · src/db/quote_cache.py"]
+    subgraph B4["Корзина: Quote Cache · src/invest_app/infrastructure/quote_cache.py"]
         direction LR
         subgraph B4R["Обязанности"]
             R41["Повторный запрос не идёт в API"]
@@ -625,7 +693,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    subgraph B5["Корзина: Analytics · src/services/analytics_service.py"]
+    subgraph B5["Корзина: Analytics · src/invest_app/services/analytics.py"]
         direction LR
         subgraph B5R["Обязанности"]
             R51["Стоимость портфеля на дату"]
@@ -664,7 +732,7 @@ R55 закрывает AC «две линии: стоимость и вложе�
 
 ```mermaid
 flowchart LR
-    subgraph B6["Корзина: CLI и Presenter · cli.py"]
+    subgraph B6["Корзина: CLI и Presenter · src/invest_app/interfaces/"]
         direction LR
         subgraph B6R["Обязанности"]
             R61["Команды backfill, value, structure, export"]
@@ -761,16 +829,16 @@ US-3 — единственная история Пользователя, ко�
 
 #### Сводка корзин
 
-| Корзина | Обязанностей | Истории | Код | Статус |
+| Корзина | Обязанностей | Истории | Код в `src/invest_app/` | Статус |
 |---|---|---|---|---|
-| Portfolio Store | 6 | US-1, 2, 9, 11, 13, 16 | `src/db/` | создать |
-| Portfolio Model | 5 | US-1, 2, 16 | `src/services/portfolio_service.py` | создать |
-| Market Data Adapter | 6 | US-9, 12, 17 | `src/t_api/` | есть частично |
-| Quote Cache | 4 | US-1, 17 | `src/db/quote_cache.py` | создать |
-| Analytics | 7 | US-1, 2, 18 | `src/services/analytics_service.py` | создать |
-| CLI и Presenter | 5 | US-1, 2, 9, 11, 12, 13 | `cli.py` | создать |
-| Config | 4 | US-1, 9, 12, 13 | `src/config.py` | есть |
-| Tax Engine | 4 | US-3 | `src/services/tax_service.py` | вне MVP |
+| Portfolio Store | 6 | US-1, 2, 9, 11, 13, 16 | `repositories/` | создать |
+| Portfolio Model | 5 | US-1, 2, 16 | `services/portfolio_model.py` | создать |
+| Market Data Adapter | 6 | US-9, 12, 17 | `infrastructure/tbank_client.py` | есть в `src/t_api/` |
+| Quote Cache | 4 | US-1, 17 | `infrastructure/quote_cache.py` | создать |
+| Analytics | 7 | US-1, 2, 18 | `services/analytics.py` | создать |
+| CLI и Presenter | 5 | US-1, 2, 9, 11, 12, 13 | `interfaces/` | создать |
+| Config | 4 | US-1, 9, 12, 13 | `config.py` | есть в `src/config.py` |
+| Tax Engine | 4 | US-3 | `services/tax.py` | вне MVP |
 
 Покрытие: из 18 историй в MVP-корзины попадают **9** — US-1, 2, 9, 11, 12, 13, 16, 17, 18. Ещё одна (US-3) ждёт Tax Engine.
 

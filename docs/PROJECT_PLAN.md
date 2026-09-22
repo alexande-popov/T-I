@@ -356,21 +356,55 @@ CREATE INDEX idx_operations_ticker ON operations (ticker);
 
 ### 7.3. Структура проекта
 
-> **Примечание.** Ниже — вариант из исходного плана. Фактическая структура репозитория другая: код лежит в `src/` (`config.py`, `models/`, `services/`, `t_api/`), точка входа — `main.py`. При реализации приводить план к фактической структуре, а не наоборот: соответствие компонентов коду зафиксировано в [logic_arch.md, 5.4](arch/logic_arch.md).
+Целевая структура репозитория. Папки создаются по этапам, пустых директорий «на будущее» не заводим — что и на каком этапе появляется, разложено в [logic_arch.md, 5.4](arch/logic_arch.md).
 
 ```
-invest_app/
-├── core/              # ядро, без интерфейсов
-│   ├── client.py      # обёртка T-Bank API
-│   ├── db.py          # SQLite, схема, запросы
-│   ├── backfill.py    # выгрузка операций и цен
-│   ├── analytics.py   # стоимость, доли, FIFO, ЛДВ
-│   └── trading.py     # сигналы, заявки, риск-менеджмент
-├── cli.py             # командная строка
-├── bot.py             # чат-бот (Telegram/VK)
-├── dashboard.py       # Streamlit
-└── data/portfolio.db
+.                                   # корень репозитория
+├── .github/workflows/
+│   ├── ci.yml                      # линтеры + тесты на push (9.4)
+│   └── deploy.yml                  # деплой по тегу v* (9.4)
+├── .gitignore
+├── .env.example                    # шаблон; сам .env в .gitignore (8.4)
+├── .pre-commit-config.yaml         # black, ruff, mypy, запрет .env (9.4)
+├── pyproject.toml                  # зависимости, ruff, pytest, mypy, пакет invest_app
+├── README.md
+├── Dockerfile
+├── docker-compose.yml              # 8.3
+│
+├── src/
+│   └── invest_app/
+│       ├── __init__.py
+│       ├── config.py               # настройки, чтение .env
+│       ├── logging_setup.py        # логи в файл (9.4)
+│       ├── facade.py               # InvestApp — единая точка входа для интерфейсов
+│       ├── backfill.py             # разовая выгрузка истории (сценарий О1)
+│       │
+│       ├── domain/                 # значения и события, I = 0
+│       ├── repositories/           # доступ к данным, репозиторий на тип
+│       ├── services/               # доменные расчёты
+│       ├── infrastructure/         # БД, T-Bank, кэш котировок, шина событий
+│       └── interfaces/             # «морды» над фасадом
+│           ├── cli/                # 2.1
+│           ├── web/                # 2.2
+│           └── bot/                # 2.3
+│
+├── tests/
+│   ├── conftest.py
+│   ├── unit/                       # 9.3
+│   ├── integration/                # 9.3
+│   └── e2e/                        # 9.3
+│
+├── scripts/
+│   ├── run_backfill.py             # точка входа для cron
+│   └── run_snapshot.py             # ежедневный снимок без Scheduler
+│
+├── data/                           # в .gitignore: portfolio.db, backups/
+└── docs/                           # как есть: PROJECT_PLAN.md, arch/logic_arch.md, arch/schemas/
 ```
+
+Слои внутри пакета — это слои графа 5.2: `domain` ← `repositories` ← `services` ← `facade` ← `interfaces`, а `infrastructure` подводится к ним снаружи (правило 5 из 10). Обёртки `core/` из прежней версии плана нет: она называла «всё остальное», не запрещая ничего, а разделение ядра и интерфейсов уже делает `interfaces/`.
+
+> **Примечание.** Фактический код пока лежит плоско в `src/` (`config.py`, `models/`, `services/`, `t_api/`), точка входа — `main.py`. Это переходное состояние к структуре выше: переезд по шагам и соответствие компонентов путям зафиксированы в [logic_arch.md, 5.4](arch/logic_arch.md). Имя дистрибутива в `pyproject.toml` (`t-i`) с именем импорта не связано, менять его не нужно.
 
 ---
 
